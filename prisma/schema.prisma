@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Everything that differs between clients lives on this row. Code reads these
+// columns; it never branches on a tenant's id or name.
+model Tenant {
+  id        String   @id // slug used in the manifest, e.g. "lumen"
+  name      String
+  currency  String // ISO 4217 currency the storefront reports in
+  timezone  String   @default("UTC") // IANA zone that defines a reporting "day"
+  createdAt DateTime @default(now()) @map("created_at")
+
+  rawFiles RawFile[]
+
+  @@map("tenants")
+}
+
+enum Source {
+  orders
+  refunds
+  email_events
+  ad_spend
+}
+
+// Every file exactly as it arrived. The (tenant, sha256) unique key means the
+// same file can never be stored twice, even if two loads race each other.
+model RawFile {
+  id       Int      @id @default(autoincrement())
+  tenantId String   @map("tenant_id")
+  source   Source
+  batch    Int
+  path     String
+  sha256   String
+  content  String
+  loadedAt DateTime @default(now()) @map("loaded_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, sha256])
+  @@map("raw_files")
+}
