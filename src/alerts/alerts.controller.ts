@@ -1,13 +1,14 @@
-import { Controller, Get, NotFoundException, Param } from "@nestjs/common";
+import { Controller, Get, NotFoundException } from "@nestjs/common";
+import { CurrentTenant } from "../current-tenant.decorator";
 import { PrismaService } from "../prisma/prisma.service";
 
-@Controller("tenants")
+@Controller()
 export class AlertsController {
   constructor(private readonly prisma: PrismaService) {}
 
   // Open alerts only: resolved ones stay in the table as history.
-  @Get("/:slug/alerts")
-  async openAlerts(@Param("slug") slug: string) {
+  @Get("alerts")
+  async openAlerts(@CurrentTenant() slug: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { slug } });
     if (!tenant) throw new NotFoundException(`Unknown tenant ${slug}`);
 

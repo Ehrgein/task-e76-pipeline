@@ -4,13 +4,13 @@ import {
   Prisma,
   ProcessingStatus,
   RawFile,
-  Source,
   Tenant,
 } from "@prisma/client";
 import { parse } from "csv-parse/sync";
+import { formatInTimeZone } from "date-fns-tz";
 import { PrismaService } from "../prisma/prisma.service";
 import { normalizeChannel } from "./channel";
-import { OrderColumns } from "./order-columns";
+import { StagingOrderColumns } from "./order-columns";
 
 // A file that fails this many times stops being retried and goes to the
 // dead-letter state, where a person has to look at it.
@@ -21,7 +21,6 @@ export enum StagingOutcome {
   Quarantined = "quarantined",
   Failed = "failed",
   DeadLetter = "dead_letter",
-  NotSupported = "not_supported",
 }
 
 export interface StagingResult {
@@ -43,12 +42,6 @@ export class StagingService {
   // Ingestion > calls this functions after creating the raw File. ID now exists due to Prisma returning the ID.
   // If this was an event driven architecture, we would do a lookup of the ID just in case.
   async stageFile(file: RawFile, tenant: Tenant): Promise<StagingResult> {
-    // Only orders have a staging step so far. Other sources stay pending, so
-    // they are visibly not processed rather than silently marked done.
-    if (file.source !== Source.orders) {
-      return { path: file.path, outcome: StagingOutcome.NotSupported };
-    }
-
     // Claim the file. Every attempt is counted, so a file that keeps failing
     // ends up in dead_letter instead of being retried forever.
     // Ideally, we would want something to later check on a CRON, or job, for retries, but out of scope for the amount of time.
@@ -97,7 +90,7 @@ export class StagingService {
     file: RawFile,
     tenant: Tenant,
   ): Promise<StagingResult> {
-    const columns = tenant.orderColumns as OrderColumns;
+    const columns = tenant.stagingOrderColumns as StagingOrderColumns;
 
     const rows: Record<string, string>[] = parse(file.content, {
       columns: true,
@@ -107,26 +100,32 @@ export class StagingService {
 
     const [headers]: string[][] = parse(file.content, { to_line: 1 });
 
-    // Schema drift: every column the tenant's mapping needs must be in the
-    // file. If one is missing (renamed or dropped), the file is held back:
-    // staging it would mean rows with no amount or no date. Extra columns
-    // break nothing, since we never read them, so they are only logged.
-    const mappedColumns = Object.values(columns);
-
-    const missingColumns = mappedColumns.filter(
+    // Schema drift, checked against the tenant's config:
+    // - missing: a column staging needs isn't in the file (renamed or
+    //   dropped). The file is held back, since staging it would mean rows
+    //   with no amount or no date.
+    // - unexpected: the file has a column the tenant's raw columns don't
+    //   list. Flagged, but the file is still staged: we never read it.
+    const missingColumns = Object.values(columns).filter(
       (column) => !headers.includes(column),
     );
 
     const unexpectedColumns = headers.filter(
-      (header) => !mappedColumns.includes(header),
+      (header) => !tenant.rawOrderColumns.includes(header),
     );
 
+    // unexpected columns added ad hoc shouldnt be stopping a run
     if (unexpectedColumns.length > 0) {
-      this.logger.warn(
-        `${file.path}: unexpected columns ${unexpectedColumns.join(", ")}`,
+      await this.openAlert(
+        tenant.id,
+        file.id,
+        AlertType.unexpected_columns,
+        unexpectedColumns,
       );
     }
 
+    // Contrary to unexpectted columns, missing columns such as amount, total, gross, etc.
+    // SHOULD quarantine a run, at least in my decision process, open to client if they prefer an empty/incorrect row instead of quarantine.
     if (missingColumns.length > 0) {
       await this.openAlert(
         tenant.id,
@@ -191,6 +190,10 @@ export class StagingService {
           tenantId: tenant.id,
           orderId: row[columns.order_id],
           createdAt: new Date(row[columns.created_at]),
+          // The calendar day in the tenant's timezone, stored as a plain date.
+          orderDate: new Date(
+            formatInTimeZone(new Date(row[columns.created_at]), tenant.timezone, "yyyy-MM-dd"),
+          ),
           channelRaw: row[columns.channel],
           channel: normalizeChannel(row[columns.channel]),
           gross: row[columns.gross],
@@ -218,7 +221,7 @@ export class StagingService {
   }
 
   // Alerts land in two places today: the pipeline_alerts table (served by
-  // GET /tenants/:slug/alerts) and the application log. In production the
+  // GET /alerts) and the application log. In production the
   // table would feed a Grafana panel or the client's dashboard, and the log
   // line would page whoever is on call.
   private async openAlert(

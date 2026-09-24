@@ -1,33 +1,24 @@
-import {
-  Controller,
-  Get,
-  NotFoundException,
-  Param,
-  Post,
-} from "@nestjs/common";
+import { Controller, Get, NotFoundException, Post } from "@nestjs/common";
+import { CurrentTenant } from "../current-tenant.decorator";
 import { PrismaService } from "../prisma/prisma.service";
 import { IngestionService } from "./ingestion.service";
 
-// TODO: the tenant slug comes from the URL for now; it moves to the auth token
-// once that exists, so a caller can only ever see its own tenant.
-@Controller("tenants")
+@Controller()
 export class IngestionController {
   constructor(
     private readonly ingestionService: IngestionService,
     private readonly prisma: PrismaService,
   ) {}
 
-  
-  @Post("/:slug/ingestions")
-  async ingest(@Param("slug") slug: string) {
+  @Post("ingestions")
+  async ingest(@CurrentTenant() slug: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { slug } });
     if (!tenant) throw new NotFoundException(`Unknown tenant ${slug}`);
-
     return this.ingestionService.ingestTenantRawFiles(tenant);
   }
 
-  @Get("/:slug/files")
-  async files(@Param("slug") slug: string) {
+  @Get("files")
+  async files(@CurrentTenant() slug: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { slug } });
     if (!tenant) throw new NotFoundException(`Unknown tenant ${slug}`);
 

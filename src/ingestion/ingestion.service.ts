@@ -7,6 +7,21 @@ import { join } from "node:path";
 import { PrismaService } from "../prisma/prisma.service";
 import { StagingService } from "../staging/staging.service";
 
+// Every source is stored raw. Only orders are modelled into staging: they are
+// what revenue is built from. Refunds, email events and ad spend stay raw by
+// decision (see TRADEOFFS.md).
+const STAGED_SOURCES: Source[] = [Source.orders];
+
+// A stored file whose staging didn't finish (the run died, it failed, or it
+// was quarantined and the mapping may have been fixed) is staged again on the
+// next run. dead_letter files have used up their retries and are left alone.
+const RESTAGE_STATUSES: ProcessingStatus[] = [
+  ProcessingStatus.pending,
+  ProcessingStatus.processing,
+  ProcessingStatus.failed,
+  ProcessingStatus.quarantined,
+];
+
 interface ManifestEntry {
   tenant: string;
   source: Source;
@@ -71,17 +86,28 @@ export class IngestionService {
       // not stop the others. Nothing was written for it, so the next run
       // simply tries it again.
       try {
+        const isStaged = STAGED_SOURCES.includes(entry.source);
+
         const existing = await this.prisma.rawFile.findUnique({
           where: { tenantId_sha256: { tenantId: tenant.id, sha256 } },
+          include: { processing: true },
         });
 
         if (existing) {
+          // Replay: "already stored" doesn't mean "done". If an earlier run
+          // died before staging finished, this run finishes it. The unique
+          // keys in staging make that safe: nothing is counted twice.
+          if (existing.processing && RESTAGE_STATUSES.includes(existing.processing.status)) {
+            await this.stagingService.stageFile(existing, tenant);
+          }
+
           results.push({ path: entry.path, outcome: IngestionOutcome.AlreadyLoaded });
           continue;
         }
 
         // The file and its "pending" status are created in one write, so a
-        // stored file always has a status and can never be forgotten.
+        // stored file always has a status and can never be forgotten. Sources
+        // that aren't staged get no status: there is nothing to track.
         const rawFile = await this.prisma.rawFile.create({
           data: {
             tenantId: tenant.id,
@@ -90,7 +116,9 @@ export class IngestionService {
             path: entry.path,
             sha256,
             content,
-            processing: { create: { tenantId: tenant.id, status: ProcessingStatus.pending } },
+            processing: isStaged
+              ? { create: { tenantId: tenant.id, status: ProcessingStatus.pending } }
+              : undefined,
           },
         });
 
@@ -98,8 +126,9 @@ export class IngestionService {
         // let a worker stage it. For now staging is called directly for the sake of simplicity.
         // In an event architecture, it would just fire an event and that would take care of staging.
         // Debatable if event architecture is warranted for how many files there are here, though.
-
-        await this.stagingService.stageFile(rawFile, tenant);
+        if (isStaged) {
+          await this.stagingService.stageFile(rawFile, tenant);
+        }
 
         results.push({ path: entry.path, outcome: IngestionOutcome.Loaded });
       } catch (err) {
