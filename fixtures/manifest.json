@@ -320,6 +320,14 @@
       "path": "lumen/refunds/batch_05.csv",
       "covers_from": "2026-01-30",
       "covers_to": "2026-02-04"
+    },
+    {
+      "tenant": "acme",
+      "source": "orders",
+      "batch": 1,
+      "path": "acme/orders/batch_01.csv",
+      "covers_from": "2026-01-06",
+      "covers_to": "2026-01-07"
     }
   ]
 }

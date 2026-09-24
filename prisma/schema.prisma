@@ -90,7 +90,10 @@ model StagingOrder {
   id         Int      @id @default(autoincrement())
   tenantId   String   @map("tenant_id") @db.Uuid
   orderId    String   @map("order_id")
-  createdAt  DateTime @map("created_at") @db.Timestamptz(3)
+  createdAt  DateTime @map("created_at") @db.Timestamptz(3) // exactly when it happened (UTC)
+  // The business day it counts towards, in the tenant's timezone. Decided once
+  // at staging, so every report groups and filters on the same day.
+  orderDate  DateTime @map("order_date") @db.Date
   channelRaw String   @map("channel_raw") // exactly as it arrived, e.g. "Meta"
   channel    String   // normalised, e.g. "paid_social"
   gross      Decimal  @db.Decimal(12, 2) // exact cents, never a float
@@ -101,6 +104,7 @@ model StagingOrder {
   rawFile RawFile @relation(fields: [rawFileId], references: [id])
 
   @@unique([tenantId, orderId])
+  @@index([tenantId, orderDate])
   @@map("staging_orders")
 }
 
