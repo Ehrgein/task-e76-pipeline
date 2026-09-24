@@ -10,13 +10,23 @@ datasource db {
 // Everything that differs between clients lives on this row. Code reads these
 // columns; it never branches on a tenant's id or name.
 model Tenant {
-  id        String   @id // slug used in the manifest, e.g. "lumen"
+  id        String   @id @default(uuid()) @db.Uuid
+  slug      String   @unique // manifest.json uses flat strings, which we will compare with this. 
   name      String
-  currency  String // ISO 4217 currency the storefront reports in
-  timezone  String   @default("UTC") // IANA zone that defines a reporting "day"
+  currency  String // ISO 4217 code, e.g. "EUR". A string, not an enum, so a new currency never needs a migration; validated on onboarding.
+  timezone  String   @default("UTC") // IANA zone that defines a reporting "day" per tenant
+  // Every column this tenant's order files contain. A header outside this
+  // list raises an alert, but the file is still staged.
+  rawOrderColumns String[] @map("raw_order_columns")
+  // The columns staging needs, as { staging column: header in the file },
+  // e.g. { "gross": "Total" }. A missing one quarantines the file. A client
+  // with different headers needs a different mapping, never different code.
+  stagingOrderColumns Json @map("staging_order_columns")
   createdAt DateTime @default(now()) @map("created_at")
 
-  rawFiles RawFile[]
+  rawFiles      RawFile[]
+  stagingOrders StagingOrder[]
+  alerts        PipelineAlert[]
 
   @@map("tenants")
 }
@@ -32,7 +42,7 @@ enum Source {
 // same file can never be stored twice, even if two loads race each other.
 model RawFile {
   id       Int      @id @default(autoincrement())
-  tenantId String   @map("tenant_id")
+  tenantId String   @map("tenant_id") @db.Uuid
   source   Source
   batch    Int
   path     String
@@ -40,8 +50,86 @@ model RawFile {
   content  String
   loadedAt DateTime @default(now()) @map("loaded_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant        Tenant          @relation(fields: [tenantId], references: [id])
+  processing    FileProcessing?
+  stagingOrders StagingOrder[]
+  alerts        PipelineAlert[]
 
   @@unique([tenantId, sha256])
   @@map("raw_files")
+}
+
+enum ProcessingStatus {
+  pending // stored, not picked up by staging yet
+  processing // a run has claimed it; if that run dies, it stays here until reclaimed
+  completed // its rows are in staging
+  failed // the last attempt threw; retried while attempts < 3
+  dead_letter // failed 3 times; no longer retried automatically, alert raised
+  quarantined // missing columns; retrying won't help until the mapping changes
+}
+
+// Where each raw file is in the pipeline. Created in the same write as the raw
+// file, so a file can never exist without a status.
+model FileProcessing {
+  rawFileId Int              @id @map("raw_file_id")
+  tenantId  String           @map("tenant_id") @db.Uuid
+  status    ProcessingStatus @default(pending)
+  attempts  Int              @default(0)
+  lastError String?          @map("last_error")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  rawFile RawFile @relation(fields: [rawFileId], references: [id])
+
+  @@index([tenantId, status])
+  @@map("file_processing")
+}
+
+// One row per order, typed and deduplicated. The (tenant, order_id) unique key
+// is what stops an order that arrives in two files from being counted twice.
+model StagingOrder {
+  id         Int      @id @default(autoincrement())
+  tenantId   String   @map("tenant_id") @db.Uuid
+  orderId    String   @map("order_id")
+  createdAt  DateTime @map("created_at") @db.Timestamptz(3)
+  channelRaw String   @map("channel_raw") // exactly as it arrived, e.g. "Meta"
+  channel    String   // normalised, e.g. "paid_social"
+  gross      Decimal  @db.Decimal(12, 2) // exact cents, never a float
+  currency   String
+  rawFileId  Int      @map("raw_file_id") // the file this order was first seen in
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  rawFile RawFile @relation(fields: [rawFileId], references: [id])
+
+  @@unique([tenantId, orderId])
+  @@map("staging_orders")
+}
+
+enum AlertType {
+  missing_columns // a column staging needs is not in the file: the file is held back
+  unexpected_columns // the file has a column its tenant doesn't list: staged, but flagged
+  duplicate_orders // orders already staged from another file: not staged again, flagged
+  dead_letter // a file failed every retry: a person has to look at it, alert + logging + maybe Sentry alert
+}
+
+// One alert per file and type, so re-running updates it instead of piling up duplicates.
+model PipelineAlert {
+  id         Int       @id @default(autoincrement())
+  tenantId   String    @map("tenant_id") @db.Uuid
+  rawFileId  Int       @map("raw_file_id")
+  type       AlertType
+  details    Json // column names, duplicated order ids, or the error
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  // Alerts are opened here but never auto-resolved. Deciding when an alert
+  // counts as "handled", a human acknowledgment, a fixed mapping causing
+  // it to stop reproducing, is a workflow decision
+  // we don't have enough context to make. Logging the alert is the priority, 
+  // resolution semantics are left as an open question (see QUESTIONS.md).
+  resolvedAt DateTime? @map("resolved_at") 
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  rawFile RawFile @relation(fields: [rawFileId], references: [id])
+
+  @@unique([rawFileId, type])
+  @@map("pipeline_alerts")
 }
