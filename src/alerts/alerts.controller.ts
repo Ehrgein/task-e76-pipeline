@@ -18,7 +18,8 @@ export class AlertsController {
         type: true,
         details: true,
         createdAt: true,
-        rawFile: { select: { path: true } },
+        rawFile: { select: { path: true } }, // the file the problem was found in
+        expectedPath: true, // or, for missing_file, the file that never arrived
       },
       orderBy: { createdAt: "asc" },
     });

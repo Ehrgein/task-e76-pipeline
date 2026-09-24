@@ -4,6 +4,7 @@ import { ProcessingStatus, Source, Tenant } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readManifest } from "../lib/manifest";
 import { PrismaService } from "../prisma/prisma.service";
 import { StagingService } from "../staging/staging.service";
 
@@ -22,17 +23,10 @@ const RESTAGE_STATUSES: ProcessingStatus[] = [
   ProcessingStatus.quarantined,
 ];
 
-interface ManifestEntry {
-  tenant: string;
-  source: Source;
-  batch: number;
-  path: string;
-}
-
 export enum IngestionOutcome {
   Loaded = "loaded",
   AlreadyLoaded = "already_loaded",
-  Missing = "missing",
+  NotFound = "not_found",
   Failed = "failed",
 }
 
@@ -58,14 +52,7 @@ export class IngestionService {
   // Stores every file the manifest lists for this tenant, exactly as it
   // arrived. A file whose content was already stored is skipped.
   async ingestTenantRawFiles(tenant: Tenant): Promise<FileResult[]> {
-    const manifestPath = join(this.fixturesDir, "manifest.json");
-
-    const manifest: { batches: ManifestEntry[] } = JSON.parse(
-      readFileSync(manifestPath, "utf8"),
-    );
-
-    // Manifest uses slug to represent a tenant, so we grab the tenant (check it exists), and compare its slug.
-    const entries = manifest.batches.filter((e) => e.tenant === tenant.slug);
+    const entries = readManifest(this.fixturesDir, tenant);
 
     const results: FileResult[] = [];
 
@@ -74,8 +61,10 @@ export class IngestionService {
 
       // Ideally we would use a service like AWS, SFTP, or something like minIO to detect the files are on prem/cloud.
       // This is just since tthe files are local right now.
+      // Not at the source (yet). Nothing to store; whether it is late is
+      // decided separately, by the missing-files check (MissingFilesService).
       if (!existsSync(fullPath)) {
-        results.push({ path: entry.path, outcome: IngestionOutcome.Missing });
+        results.push({ path: entry.path, outcome: IngestionOutcome.NotFound });
         continue;
       }
 

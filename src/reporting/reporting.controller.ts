@@ -23,12 +23,4 @@ export class ReportingController {
 
     return this.reportingService.dailyRevenue(tenant, from, to);
   }
-
-  @Get("reconciliation")
-  async reconciliation(@CurrentTenant() slug: string) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { slug } });
-    if (!tenant) throw new NotFoundException(`Unknown tenant ${slug}`);
-
-    return this.reportingService.reconcile(tenant);
-  }
 }

@@ -15,9 +15,11 @@ model Tenant {
   name      String
   currency  String // ISO 4217 code, e.g. "EUR". A string, not an enum, so a new currency never needs a migration; validated on onboarding.
   timezone  String   @default("UTC") // IANA zone that defines a reporting "day" per tenant
+
   // Every column this tenant's order files contain. A header outside this
   // list raises an alert, but the file is still staged.
   rawOrderColumns String[] @map("raw_order_columns")
+  
   // The columns staging needs, as { staging column: header in the file },
   // e.g. { "gross": "Total" }. A missing one quarantines the file. A client
   // with different headers needs a different mapping, never different code.
@@ -113,15 +115,17 @@ enum AlertType {
   unexpected_columns // the file has a column its tenant doesn't list: staged, but flagged
   duplicate_orders // orders already staged from another file: not staged again, flagged
   dead_letter // a file failed every retry: a person has to look at it, alert + logging + maybe Sentry alert
+  missing_file // a file the manifest expects is past its due date and never arrived
 }
 
 // One alert per file and type, so re-running updates it instead of piling up duplicates.
 model PipelineAlert {
-  id         Int       @id @default(autoincrement())
-  tenantId   String    @map("tenant_id") @db.Uuid
-  rawFileId  Int       @map("raw_file_id")
-  type       AlertType
-  details    Json // column names, duplicated order ids, or the error
+  id           Int       @id @default(autoincrement())
+  tenantId     String    @map("tenant_id") @db.Uuid
+  rawFileId    Int?      @map("raw_file_id") // empty for missing_file: there is no stored file
+  expectedPath String?   @map("expected_path") // for missing_file: the file that never arrived
+  type         AlertType
+  details      Json // column names, duplicated order ids, the error, or when a missing file was due
   createdAt  DateTime  @default(now()) @map("created_at")
 
   // Alerts are opened here but never auto-resolved. Deciding when an alert
@@ -131,9 +135,10 @@ model PipelineAlert {
   // resolution semantics are left as an open question (see QUESTIONS.md).
   resolvedAt DateTime? @map("resolved_at") 
 
-  tenant  Tenant  @relation(fields: [tenantId], references: [id])
-  rawFile RawFile @relation(fields: [rawFileId], references: [id])
+  tenant  Tenant   @relation(fields: [tenantId], references: [id])
+  rawFile RawFile? @relation(fields: [rawFileId], references: [id])
 
   @@unique([rawFileId, type])
+  @@unique([tenantId, type, expectedPath]) // a missing file is flagged once, however many runs see it
   @@map("pipeline_alerts")
 }
