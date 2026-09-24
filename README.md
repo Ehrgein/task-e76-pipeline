@@ -1,18 +1,39 @@
-# Deep dive fixtures
+# Ingestion pipeline
 
-Four sources for two tenants, delivered the way exports actually land: a
-sequence of batch files per source, one format per source.
+Ingests each tenant's exports (orders, refunds, email events, ad spend) into Postgres, turns orders into daily revenue, and serves it through an API. One codebase for every tenant; a new tenant is configuration only.
 
-- `orders/`        CSV, one row per order
-- `email_events/`  NDJSON, one JSON object per line
-- `ad_spend/`      CSV, daily spend per campaign
-- `refunds/`       CSV, one row per refund
+## Requirements
 
-`manifest.json` lists every batch the set is supposed to contain, with the
-window each one covers. `<tenant>/finance_summary.csv` is what the client
-reports they earned, by day.
+- Node 20+
+- Docker (Postgres runs in a container on port 5433)
 
-These fixtures contain the failures described in the brief. They are there
-on purpose and they are not all obvious. Some of what you find cannot be
-solved from the data at all; the brief says what to do about those. Reading
-all of it before you start building is time well spent.
+## Install
+
+```bash
+npm install
+cp .env.example .env              # PowerShell: copy .env.example .env
+docker compose up -d --wait       # or: npm run db:up
+npm run db:deploy                 # migrations
+npm run db:seed                   # tenants
+```
+
+## Run
+
+```bash
+npm run start                     # http://localhost:3000
+```
+
+Every request needs an `x-api-key` header: `lumen-dev-key`, `northwind-dev-key` or `acme-dev-key`.
+
+```bash
+curl -X POST -H "x-api-key: lumen-dev-key" localhost:3000/ingestions   # load the fixture files
+curl -H "x-api-key: lumen-dev-key" localhost:3000/revenue              # daily gross revenue
+curl -H "x-api-key: lumen-dev-key" localhost:3000/files                # stored files and their status
+curl -H "x-api-key: lumen-dev-key" localhost:3000/alerts               # problems found
+```
+
+## Status
+
+**Done:** raw storage for all four sources, orders → daily revenue (matches `finance_summary.csv` to the cent), safe re-runs, schema-drift and duplicate alerts for orders, missing file alerts, tenants by configuration (`acme` is a demo tenant we added).
+
+**Not done:** late arrivals / never restating reported days, staging for refunds, email events and ad spend. Details in [TRADEOFFS.md](TRADEOFFS.md) and [QUESTIONS.md](QUESTIONS.md).

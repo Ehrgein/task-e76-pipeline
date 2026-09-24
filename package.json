@@ -4,6 +4,7 @@
   "private": true,
   "description": "Multi-tenant ingestion pipeline: storefront orders, refunds, email events and ad spend into Postgres.",
   "scripts": {
+    "postinstall": "prisma generate",
     "build": "nest build",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",

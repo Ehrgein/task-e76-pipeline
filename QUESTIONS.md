@@ -1,31 +1,63 @@
 # Questions
 
-Each question lists what we are assuming in the meantime, so the pipeline keeps running while you decide.
+Each question says what we are assuming in the meantime, so the pipeline keeps running while you decide.
 
-## 1. Should channel names be unified across brands?
+## 1. Is Lumen's finance export in EUR or USD?
 
-The two brands name the same channels differently:
+Lumen's orders are in EUR; `finance_summary.csv` labels the same amounts USD. The amounts match exactly, so no conversion happened: one of the two labels is wrong.
 
-| Lumen | Northwind |
-|---|---|
-| Direct | direct |
-| Google | google |
-| Meta | facebook |
-| Newsletter | email |
+**Assuming:** EUR, as the orders say.
 
-Capitalisation differences we treat as the same value. The real question is whether `Meta` and `facebook` are the same channel, and whether `Newsletter` and `email` are, so that channel numbers can be compared across brands.
+## 2. How does finance calculate net revenue?
 
-**Assuming in the meantime:** we map every value, after lowercasing, onto one short list: `direct`, `paid_search` (google), `paid_social` (meta, facebook, fb), `email` (newsletter, email). A value we have not seen before, including a misspelling such as "Facaebook", is recorded as `unmapped` and raised as an alert, never guessed. The order still counts towards revenue, and the original value is kept alongside, so correcting a mapping later loses nothing.
+On some days `net_reported` is higher than `gross_reported`, which refunds alone can't explain. We also don't know whether a refund counts on the day of the refund or the day of the original order.
 
-**Please confirm** the groupings above, and tell us about any channel names your team uses that are not in this table.
+That is to say, over the month net is higher than gross for both brands (should be lower) so even though refunds are not applied to our calculations, net shouldnt be higher regardless. The math suggests that refunds are not the issue here either, my first hypothesis was that refunds were being counted as revenue, but thats not the case.
 
-## 2. Do ad campaigns and email campaigns share IDs?
+The daily gap between net and gross is small (about −65 to +100) and changes sign from day to day, while refunds run to hundreds per day. Adding or subtracting refunds, by refund date or order date, doesn't reproduce net on any day.
 
-Both the ad spend and the email events carry a `campaign_id`, but they do not line up consistently:
+**Assuming:** we report gross only until this is clear.
 
-- **Lumen:** ad spend uses `camp-400` to `camp-402` (Meta, Google, Newsletter); email events use `cmp_100` to `cmp_111`. No ID appears in both.
-- **Northwind:** ad spend uses `cmp_100` to `cmp_102`, and the same IDs appear in email events. But `cmp_100` is a facebook ad in the spend data, and email events record opens and clicks against it, which a facebook ad would not produce.
+## 3. When is a day "reported"?
 
-**Assuming in the meantime:** ad spend and email events are separate data. We do not join them on `campaign_id`, and we report no cost-per-click or cost-per-open by campaign.
+Your board sees weekly numbers. We need to know when a week counts as reported, since from then on any late order for it is shown as an adjustment next to the reported number, never by changing it.
 
-**Please confirm** whether an ad campaign and an email campaign with the same ID are the same campaign, and if so, what links Lumen's `camp-4xx` IDs to its `cmp_1xx` IDs.
+**Assuming:** nothing is frozen yet.
+
+## 4. If the same order arrives twice with different values, which copy is right?
+
+There are some duplicates on our file, and luckily, the values are the same. What happens however, when the numbers vary? Will this ever be the case?
+**Assuming:** No assumption here, we are removing duplicates and treating the first one we see as accurate (we are alerting this, also)
+
+## 5. How do your files reach us, and how long should we wait before calling one missing?
+
+By upload, webhook, or on a schedule? Today we expect each batch within 24 hours of the last day it covers.
+**Assuming:** 24 hours, checked daily at 02:00 UTC.
+
+## 6. How do you want to hear about problems?
+
+Missing files, changed columns and duplicate orders are recorded as alerts. They can be queried for a UI, for example, yet they don't do anything on their own. Should they reach you by Slack, email, or a dashboard? Additionally, how would we mark them as resolved, if dashboard is the answer?
+
+**Assuming:** they are recorded and logged only.
+
+## 7. Should channel names be unified across brands?
+
+Lumen says `Meta` and `Newsletter` where Northwind says `facebook` and `email`.
+
+**Assuming:** we group them as `paid_social` (Meta, facebook), `email` (Newsletter, email), `paid_search` (Google) and `direct`. An unknown name is stored as `unmapped` and the original is kept, so nothing is lost.
+
+## 8. Do ad campaigns and email campaigns share IDs?
+
+Lumen's ad and email campaign IDs never overlap; Northwind's do, but a Facebook ad receiving email opens suggests the overlap is a coincidence. For example:
+
+```
+lumen     ad spend:      2026-01-06, camp-400, Meta, 273.04
+lumen     email events:  campaign_id is always cmp_100 ... cmp_111   (camp-400 never appears)
+
+northwind ad spend:      2026-01-06, cmp_100, facebook, 341.92
+northwind email events:  {"type": "open", "campaign_id": "cmp_100", ...}
+```
+
+The Northwind `cmp_100` is a Facebook ad, yet emails are recorded as opened from it.
+
+**Assuming:** ad spend and email events are not linked by campaign ID.
